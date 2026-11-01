@@ -11,20 +11,19 @@
     const endpoint = "https://browser-intake-datadoghq.eu/api/v2/logs";
     const token = settings.token;
 
-    /* ---------------- BOT FILTERING ---------------- */
-
+    // Bot filtering
     const ua = navigator.userAgent || "";
     const namedBotRe = /(CookieInformationScanner|Morningscore|Googlebot|AdsBot-Google|Mediapartners-Google|APIs-Google|Google-InspectionTool|Storebot-Google|AhrefsBot|AhrefsSiteAudit)/i;
     const automationRe = /(HeadlessChrome|phantomjs|selenium|webdriver|playwright|puppeteer|chromedriver)/i;
 
     if (namedBotRe.test(ua) || automationRe.test(ua) || navigator.webdriver === true) return;
 
-    /* ---------------- HELPERS ---------------- */
-
+    // Get device type
     function getDeviceType() {
       return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "mobile" : "desktop";
     }
 
+    // Read cookies
     function readAllCookies() {
       const cookies = {
         cookie_values: {},
@@ -44,6 +43,7 @@
       return cookies;
     }
 
+    // Attach missing DataLayer events
     function attachMissingDataLayers() {
       if (!Array.isArray(window.dataLayerlog) || !Array.isArray(window.dataLayer)) return;
 
@@ -76,8 +76,7 @@
       }
     }
 
-    /* ---------------- CONSENT ---------------- */
-
+    // Get consent status
     function getConsentStatus() {
       const consent = {
         analytics_storage: "not set",
@@ -110,28 +109,45 @@
       return consent;
     }
 
-    /* ---------------- FLUSH ---------------- */
+    // Get page performance
+    function getPagePerformance() {
+      const result = {
+        page_load_completed: document.readyState === "complete"
+      };
 
+      if (typeof performance === "undefined") return result;
+
+      if (typeof performance.getEntriesByType === "function") {
+        const navigation = performance.getEntriesByType("navigation")[0];
+
+        if (navigation) {
+          if (navigation.responseStart > 0) {
+            result.ttfb = Math.round(navigation.responseStart) / 1000;
+          }
+
+          if (navigation.loadEventEnd > 0) {
+            result.page_load_time = Math.round(navigation.loadEventEnd) / 1000;
+          }
+        }
+      }
+
+      return result;
+    }
+
+    // Flush queues
     function flush(isPageExit = false) {
       const consent = getConsentStatus();
-
-      const consentAccepted =
-        consent.analytics_storage === 1 &&
-        consent.ad_storage === 1;
-
+      const consentAccepted = consent.analytics_storage === 1 && consent.ad_storage === 1;
       const events = [];
 
-      // DataLayer events: Require consent
-      if (
-        consentAccepted &&
-        Array.isArray(window.dataLayerlog) &&
-        window.dataLayerlog.length
-      ) {
+      // DataLayer events
+      if (consentAccepted && Array.isArray(window.dataLayerlog) && window.dataLayerlog.length) {
         attachMissingDataLayers();
 
         window.dataLayerlog.forEach(event => {
           event.user_agent = navigator.userAgent;
           event.device_type = getDeviceType();
+          event.performance = getPagePerformance();
 
           if (event.key_event === 1 || event.key_event === true) {
             event.full_datalayer = window.dataLayer;
@@ -145,16 +161,18 @@
         window.dataLayerlog.length = 0;
       }
 
-      // Traffic events: Send on page exit regardless of consent
-      if (
-        isPageExit &&
-        Array.isArray(window.trafficLog) &&
-        window.trafficLog.length
-      ) {
+      // Traffic events
+      if (isPageExit && Array.isArray(window.trafficLog) && window.trafficLog.length) {
         window.trafficLog.forEach(event => {
           event.user_agent = navigator.userAgent;
           event.device_type = getDeviceType();
           event.consent = consent;
+          event.performance = getPagePerformance();
+
+          // Time on page
+          if (typeof performance !== "undefined" && typeof performance.now === "function") {
+            event.performance.time_on_page = Math.round(performance.now()) / 1000;
+          }
 
           events.push(event);
         });
@@ -164,15 +182,11 @@
 
       if (!events.length) return;
 
-      const payload = events
-        .map(event => JSON.stringify(event))
-        .join("\n");
-
+      const payload = events.map(event => JSON.stringify(event)).join("\n");
       navigator.sendBeacon(endpoint + "?dd-api-key=" + token, payload);
     }
 
-    /* ---------------- LIFECYCLE ---------------- */
-
+    // Lifecycle
     setInterval(flush, 5000);
 
     addEventListener("visibilitychange", () => {
